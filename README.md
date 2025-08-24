@@ -33,7 +33,7 @@ A production-ready REST API for notes management with JWT authentication, built 
 
 ### 1. Clone and Install
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/ceaton9/notes-backend
 cd notes-api
 npm install
 ```
