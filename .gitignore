@@ -1,0 +1,97 @@
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build outputs
+dist/
+build/
+
+# Environment files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Azure Functions
+local.settings.json
+*.user
+__azurite_db*__.json
+__blobstorage__
+__queuestorage__
+__azurite_db*
+
+# Logs
+logs
+*.log
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage/
+*.lcov
+
+# Jest
+.nyc_output
+
+# Dependency directories
+jspm_packages/
+
+# Optional npm cache directory
+.npm
+
+# Optional REPL history
+.node_repl_history
+
+# Output of 'npm pack'
+*.tgz
+
+# Yarn Integrity file
+.yarn-integrity
+
+# dotenv environment variables file
+.env
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Claude Code related files
+CLAUDE.md
+.claude/
+*claude*
+*Claude*
+
+# Deployment files
+*.zip
+deployment.zip
+api-deployment.zip
+minimal-deployment.zip
+
+# Azure Functions build artifacts
+.serverless/
+
+# Test functions
+test/
+minimal-test/
+
+# Temporary build directories
+.build/
+.vercel

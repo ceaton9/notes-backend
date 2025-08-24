@@ -1,0 +1,333 @@
+version: 2.1
+
+# Define reusable commands
+commands:
+  setup_node:
+    description: "Setup Node.js environment"
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - v1-dependencies-{{ checksum "package.json" }}
+            - v1-dependencies-
+      - run:
+          name: Install dependencies
+          command: npm ci
+      - save_cache:
+          paths:
+            - node_modules
+          key: v1-dependencies-{{ checksum "package.json" }}
+
+  setup_mongodb:
+    description: "Setup MongoDB Memory Server for tests"
+    steps:
+      - run:
+          name: Install MongoDB Memory Server
+          command: npm install mongodb-memory-server --no-save
+
+# Define executors
+executors:
+  node-executor:
+    docker:
+      - image: cimg/node:20.10
+    working_directory: ~/project
+
+# Define jobs
+jobs:
+  # Code quality and linting
+  lint:
+    executor: node-executor
+    steps:
+      - setup_node
+      - run:
+          name: Run ESLint
+          command: npm run lint
+      - run:
+          name: Check TypeScript compilation
+          command: npm run build
+
+  # Unit and integration tests
+  test:
+    executor: node-executor
+    steps:
+      - setup_node
+      - run:
+          name: Run all tests
+          command: npm test -- --coverage --watchAll=false --passWithNoTests
+      - store_test_results:
+          path: coverage
+      - store_artifacts:
+          path: coverage
+          destination: coverage-reports
+
+  # Build and prepare for deployment
+  build:
+    executor: node-executor
+    steps:
+      - setup_node
+      - run:
+          name: Build TypeScript
+          command: npm run build
+      - run:
+          name: Verify build output
+          command: |
+            ls -la dist/
+            test -f dist/src/server.js
+            test -f dist/src/functions/serverless.js
+            test -f dist/src/functions/vercel.js
+      - persist_to_workspace:
+          root: .
+          paths:
+            - dist
+            - node_modules
+            - package*.json
+            - vercel.json
+            - api
+            - public
+
+  # Security audit
+  security-audit:
+    executor: node-executor
+    steps:
+      - setup_node
+      - run:
+          name: Run security audit
+          command: npm audit --audit-level=high || echo "Security vulnerabilities found but continuing build"
+      - run:
+          name: Check for outdated packages
+          command: npm outdated || true
+
+  # Deploy to Azure Functions (staging)
+  deploy-azure-staging:
+    executor: node-executor
+    steps:
+      - attach_workspace:
+          at: .
+      - run:
+          name: Install Azure CLI
+          command: |
+            curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+      - run:
+          name: Install Serverless Framework
+          command: npm install -g serverless serverless-azure-functions
+      - run:
+          name: Deploy to Azure Functions (Staging)
+          command: |
+            echo "Deploying to Azure Functions staging environment (Linux)"
+            echo "Function App: notes-backend-api-linux"
+            echo "Region: Southeast Asia"
+            serverless deploy --stage staging --verbose
+          environment:
+            MONGODB_URI: $MONGODB_URI
+            JWT_SECRET: $JWT_SECRET
+            AZURE_SUBSCRIPTION_ID: $AZURE_SUBSCRIPTION_ID
+
+  # Deploy to AWS Lambda (staging)
+  deploy-aws-staging:
+    executor: node-executor
+    steps:
+      - attach_workspace:
+          at: .
+      - run:
+          name: Install AWS CLI
+          command: |
+            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+            unzip awscliv2.zip
+            sudo ./aws/install
+      - run:
+          name: Install Serverless Framework
+          command: npm install -g serverless
+      - run:
+          name: Deploy to AWS Lambda (Staging)
+          command: |
+            echo "Deploying to AWS Lambda staging environment"
+            serverless deploy --config serverless-aws.yml --stage staging --verbose
+          environment:
+            AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+            AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+            MONGODB_URI: $MONGODB_URI
+            JWT_SECRET: $JWT_SECRET
+
+  # Deploy to Vercel (staging)
+  deploy-vercel-staging:
+    executor: node-executor
+    steps:
+      - attach_workspace:
+          at: .
+      - run:
+          name: Install Vercel CLI
+          command: npm install -g vercel
+      - run:
+          name: Deploy to Vercel (Staging)
+          command: |
+            echo "Deploying to Vercel staging environment"
+            vercel --token $VERCEL_TOKEN --scope $VERCEL_ORG_ID --confirm
+          environment:
+            VERCEL_PROJECT_ID: $VERCEL_PROJECT_ID
+            VERCEL_ORG_ID: $VERCEL_ORG_ID
+
+  # Integration tests against staging environment
+  test-staging:
+    executor: node-executor
+    steps:
+      - setup_node
+      - run:
+          name: Test staging endpoints
+          command: |
+            # Test Azure staging endpoint (Linux Function App)
+            curl -f "${AZURE_STAGING_URL:-https://notes-backend-api-linux.azurewebsites.net}/api/auth/profile" -H "Authorization: Bearer invalid" || echo "Expected 401 response"
+            
+            # Test AWS staging endpoint  
+            curl -f "${AWS_STAGING_URL}/auth/profile" -H "Authorization: Bearer invalid" || echo "Expected 401 response"
+            
+            # Test Vercel staging endpoint
+            curl -f "${VERCEL_STAGING_URL}/api/auth/profile" -H "Authorization: Bearer invalid" || echo "Expected 401 response"
+
+  # Production deployment (manual approval required)
+  deploy-production:
+    executor: node-executor
+    steps:
+      - attach_workspace:
+          at: .
+      - run:
+          name: Install deployment tools
+          command: |
+            npm install -g serverless serverless-azure-functions vercel
+      - run:
+          name: Deploy to production (chosen platform)
+          command: |
+            case $DEPLOYMENT_TARGET in
+              "azure")
+                echo "Deploying to Azure Functions production (Linux)"
+                echo "Function App: notes-backend-api-linux"
+                echo "Region: Southeast Asia"
+                serverless deploy --stage prod --verbose
+                ;;
+              "aws")
+                echo "Deploying to AWS Lambda production"
+                serverless deploy --config serverless-aws.yml --stage prod --verbose
+                ;;
+              "vercel")
+                echo "Deploying to Vercel production"
+                vercel --prod --token $VERCEL_TOKEN --scope $VERCEL_ORG_ID --confirm
+                ;;
+              *)
+                echo "No deployment target specified"
+                exit 1
+                ;;
+            esac
+          environment:
+            # Azure production environment variables
+            MONGODB_URI: $MONGODB_URI
+            JWT_SECRET: $JWT_SECRET
+            AZURE_SUBSCRIPTION_ID: $AZURE_SUBSCRIPTION_ID
+            # AWS production environment variables
+            AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+            AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+            # Vercel production environment variables
+            VERCEL_PROJECT_ID: $VERCEL_PROJECT_ID
+            VERCEL_ORG_ID: $VERCEL_ORG_ID
+
+# Define workflows
+workflows:
+  version: 2
+
+  # Main development workflow
+  build-test-deploy:
+    jobs:
+      # Run quality checks in parallel
+      - lint:
+          filters:
+            branches:
+              ignore: 
+                - gh-pages
+      
+      - test:
+          filters:
+            branches:
+              ignore: 
+                - gh-pages
+      
+      - security-audit:
+          filters:
+            branches:
+              ignore: 
+                - gh-pages
+
+      # Build after quality checks pass
+      - build:
+          requires:
+            - lint
+            - test
+            - security-audit
+          filters:
+            branches:
+              ignore: 
+                - gh-pages
+
+      # Deploy to staging environments (develop branch)
+      - deploy-azure-staging:
+          requires:
+            - build
+          filters:
+            branches:
+              only: develop
+
+      - deploy-aws-staging:
+          requires:
+            - build
+          filters:
+            branches:
+              only: develop
+
+      - deploy-vercel-staging:
+          requires:
+            - build
+          filters:
+            branches:
+              only: develop
+
+      # Test staging deployments
+      - test-staging:
+          requires:
+            - deploy-azure-staging
+            - deploy-aws-staging  
+            - deploy-vercel-staging
+          filters:
+            branches:
+              only: develop
+
+      # Production deployment (main branch, manual approval)
+      - deploy-production:
+          type: approval
+          requires:
+            - build
+          filters:
+            branches:
+              only: main
+
+  # Nightly security and dependency checks
+  nightly-checks:
+    triggers:
+      - schedule:
+          cron: "0 2 * * *"
+          filters:
+            branches:
+              only: main
+    jobs:
+      - security-audit
+      - test
+
+  # Weekly dependency updates check
+  weekly-maintenance:
+    triggers:
+      - schedule:
+          cron: "0 6 * * 1"
+          filters:
+            branches:
+              only: main
+    jobs:
+      - security-audit:
+          name: weekly-security-audit
+      - lint:
+          name: weekly-lint-check

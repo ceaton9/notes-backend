@@ -1,0 +1,193 @@
+# GitHub Actions backup workflow (alternative to Circle CI)
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Nightly security checks
+    - cron: '0 2 * * *'
+
+env:
+  NODE_VERSION: '18.x'
+
+jobs:
+  # Code quality and testing
+  quality-checks:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [18.x, 20.x]
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Run linting
+      run: npm run lint
+    
+    - name: Run tests with coverage
+      run: npm test -- --coverage --watchAll=false
+      env:
+        NODE_ENV: test
+    
+    - name: Upload coverage reports
+      uses: codecov/codecov-action@v3
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+    
+    - name: Security audit
+      run: npm audit --audit-level=moderate
+
+  # Build and prepare artifacts
+  build:
+    needs: quality-checks
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Build TypeScript
+      run: npm run build
+    
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: build-artifacts
+        path: |
+          dist/
+          package*.json
+          serverless*.yml
+          vercel.json
+          host.json
+
+  # Deploy to staging (develop branch)
+  deploy-staging:
+    if: github.ref == 'refs/heads/develop'
+    needs: build
+    runs-on: ubuntu-latest
+    environment: staging
+    
+    strategy:
+      matrix:
+        platform: [azure, aws, vercel]
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Download build artifacts
+      uses: actions/download-artifact@v3
+      with:
+        name: build-artifacts
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+    
+    - name: Install deployment tools
+      run: |
+        npm install -g serverless serverless-azure-functions vercel
+    
+    - name: Deploy to Azure Functions (Staging)
+      if: matrix.platform == 'azure'
+      run: |
+        serverless deploy --stage staging
+      env:
+        AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        MONGODB_URI: ${{ secrets.MONGODB_URI_STAGING }}
+        JWT_SECRET: ${{ secrets.JWT_SECRET_STAGING }}
+    
+    - name: Deploy to AWS Lambda (Staging)
+      if: matrix.platform == 'aws'
+      run: |
+        serverless deploy --config serverless-aws.yml --stage staging
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        MONGODB_URI: ${{ secrets.MONGODB_URI_STAGING }}
+        JWT_SECRET: ${{ secrets.JWT_SECRET_STAGING }}
+    
+    - name: Deploy to Vercel (Staging)
+      if: matrix.platform == 'vercel'
+      run: |
+        vercel --token ${{ secrets.VERCEL_TOKEN }} --scope ${{ secrets.VERCEL_ORG_ID }}
+      env:
+        VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+
+  # Production deployment (manual approval)
+  deploy-production:
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Download build artifacts
+      uses: actions/download-artifact@v3
+      with:
+        name: build-artifacts
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+    
+    - name: Deploy to Production
+      run: |
+        case ${{ secrets.DEPLOYMENT_TARGET }} in
+          "azure")
+            npm install -g serverless serverless-azure-functions
+            serverless deploy --stage prod
+            ;;
+          "aws") 
+            npm install -g serverless
+            serverless deploy --config serverless-aws.yml --stage prod
+            ;;
+          "vercel")
+            npm install -g vercel
+            vercel --prod --token ${{ secrets.VERCEL_TOKEN }}
+            ;;
+        esac
+      env:
+        # Azure
+        AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        # AWS
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        # Vercel
+        VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+        VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        # App config
+        MONGODB_URI: ${{ secrets.MONGODB_URI }}
+        JWT_SECRET: ${{ secrets.JWT_SECRET }}
